@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# chk-entry.sh - check if the files in an entry match the entry's manifest
+# tar-entry.sh - tar files belonging to an entry
 #
 # Copyright (c) 2024 by Landon Curt Noll.  All Rights Reserved.
 #
@@ -49,7 +49,7 @@ shopt -s globstar	# enable ** to match all files and zero or more directories an
 
 # set variables referenced in the usage message
 #
-export VERSION="1.0.1 2024-02-13"
+export VERSION="1.0 2024-02-13"
 NAME=$(basename "$0")
 export NAME
 export V_FLAG=0
@@ -66,11 +66,18 @@ if [[ $status -eq 0 ]]; then
 fi
 export TOPDIR
 export REPO_URL="https://github.com/ioccc-src/temp-test-ioccc"
+export CAP_W_FLAG_FOUND=
+GTAR_TOOL=$(type -P gtar)
+export GTAR_TOOL
+if [[ -z "$GIT_TOOL" ]]; then
+    echo "$0: FATAL: gtar (gnu tar) tool is not installed or not in \$PATH" 1>&2
+    exit 9
+fi
 
 # set usage message
 #
 export USAGE="usage: $0 [-h] [-v level] [-V] [-d topdir] [-D docroot/] [-n] [-N]
-			[-p tool] [-u repo_url] [-w site_url]
+			[-p tool] [-u repo_url] [-w site_url] [-W]
 			YYYY/dir
 
 	-h		print help message and exit
@@ -88,11 +95,13 @@ export USAGE="usage: $0 [-h] [-v level] [-V] [-d topdir] [-D docroot/] [-n] [-N]
 	-u repo_url	This option is ignored
 	-w site_url	This option is ignored
 
+	-W		Warn if a file in the manifest is missing: (def: error if a file is missing)
+
 	YYYY/dir	path from topdir to entry directory: must contain the files: README.md, .path and .entry.json
 
 Exit codes:
      0         all OK
-     1	       entry files to not match manifest in .entry.json
+     1	       some file in the .entry.json manifest is missing and -W was not used or no files were found
      2         -h and help string printed or -V and version string printed
      3         command line error
      4         bash version is < 4.2
@@ -100,6 +109,7 @@ Exit codes:
      6	       bin/filelist.entry.json.awk is not a non-empty readable file
      7	       error in trying to determine files used by the entry
      8	       missing critical top level file
+     9	       gnu tar is missing or execution failed
  >= 10  < 210  ((not used))
  >= 210	       internal tool error
 
@@ -113,7 +123,7 @@ export EXIT_CODE="0"
 
 # parse command line
 #
-while getopts :hv:Vd:D:nNp:u:U:w: flag; do
+while getopts :hv:Vd:D:nNp:u:U:w:W flag; do
   case "$flag" in
     h) echo "$USAGE" 1>&2
 	exit 2
@@ -134,6 +144,8 @@ while getopts :hv:Vd:D:nNp:u:U:w: flag; do
     u)  ;;
     U)  ;;
     w)  ;;
+    W) CAP_W_FLAG_FOUND="true"
+	;;
     \?) echo "$0: ERROR: invalid option: -$OPTARG" 1>&2
 	echo 1>&2
 	print_usage 1>&2
@@ -260,11 +272,6 @@ if [[ ! -d $YEAR_DIR ]]; then
     exit 5
 fi
 export ENTRY_ID="${YEAR_DIR}_${ENTRY_DIR}"
-export DOT_YEAR="$YEAR_DIR/.year"
-if [[ ! -s $DOT_YEAR ]]; then
-    echo "$0: ERROR: not a non-empty file: $DOT_YEAR" 1>&2
-    exit 5
-fi
 # Now that we have moved to topdir, form and verify YYYY_DIR is a writable directory
 export YYYY_DIR="$YEAR_DIR/$ENTRY_DIR"
 if [[ ! -e $YYYY_DIR ]]; then
@@ -302,6 +309,10 @@ if [[ ! -r $ENTRY_JSON ]]; then
     echo "$0: ERROR: .entry.json is not a readable file: $ENTRY_JSON" 1>&2
     exit 5
 fi
+
+# determine the name of our tarball
+#
+export TARBALL="$YYYY_DIR/$ENTRY_ID.tar.bz2"
 
 # verify we have our awk tool
 #
@@ -370,10 +381,12 @@ if [[ $V_FLAG -ge 3 ]]; then
     echo "$0: debug[3]: NAME=$NAME" 1>&2
     echo "$0: debug[3]: V_FLAG=$V_FLAG" 1>&2
     echo "$0: debug[3]: GIT_TOOL=$GIT_TOOL" 1>&2
+    echo "$0: debug[3]: GTAR_TOOL=$GTAR_TOOL" 1>&2
     echo "$0: debug[3]: TOPDIR=$TOPDIR" 1>&2
     echo "$0: debug[3]: REPO_URL=$REPO_URL" 1>&2
     echo "$0: debug[3]: NOOP=$NOOP" 1>&2
     echo "$0: debug[3]: DO_NOT_PROCESS=$DO_NOT_PROCESS" 1>&2
+    echo "$0: debug[3]: CAP_W_FLAG_FOUND=$CAP_W_FLAG_FOUND" 1>&2
     echo "$0: debug[3]: ENTRY_PATH=$ENTRY_PATH" 1>&2
     echo "$0: debug[3]: EXIT_CODE=$EXIT_CODE" 1>&2
     echo "$0: debug[3]: REPO_NAME=$REPO_NAME" 1>&2
@@ -382,9 +395,9 @@ if [[ $V_FLAG -ge 3 ]]; then
     echo "$0: debug[3]: YEAR_DIR=$YEAR_DIR" 1>&2
     echo "$0: debug[3]: ENTRY_DIR=$ENTRY_DIR" 1>&2
     echo "$0: debug[3]: ENTRY_ID=$ENTRY_ID" 1>&2
-    echo "$0: debug[3]: DOT_YEAR=$DOT_YEAR" 1>&2
     echo "$0: debug[3]: DOT_PATH=$DOT_PATH" 1>&2
     echo "$0: debug[3]: ENTRY_JSON=$ENTRY_JSON" 1>&2
+    echo "$0: debug[3]: TARBALL=$TARBALL" 1>&2
     echo "$0: debug[3]: FILELIST_ENTRY_JSON_AWK=$FILELIST_ENTRY_JSON_AWK" 1>&2
     echo "$0: debug[3]: IOCCC_CSS=$IOCCC_CSS" 1>&2
     echo "$0: debug[3]: VAR_MK=$VAR_MK" 1>&2
@@ -421,86 +434,257 @@ elif [[ $V_FLAG -ge 3 ]]; then
     echo "$0: debug[3]: because of -n, temporary file manifest list is not used: $TMP_MANIFEST_LIST" 1>&2
 fi
 
-# create a temporary find files list
+# create a temporary sort list of files to tar
 #
-TMP_FILE_LIST=".$NAME.$$.find.list"
+TMP_TAR_LIST=".$NAME.$$.tar.list"
 if [[ $V_FLAG -ge 3 ]]; then
-    echo  "$0: debug[3]: temporary file manifest list: $TMP_FILE_LIST" 1>&2
+    echo  "$0: debug[3]: temporary file tar list: $TMP_TAR_LIST" 1>&2
 fi
 if [[ -z $NOOP ]]; then
-    trap 'rm -f $TMP_MANIFEST_LIST $TMP_FILE_LIST; exit' 0 1 2 3 15
-    rm -f "$TMP_FILE_LIST"
-    if [[ -e $TMP_FILE_LIST ]]; then
-	echo "$0: ERROR: cannot remove temporary file manifest list: $TMP_FILE_LIST" 1>&2
-	exit 227
+    trap 'rm -f $TMP_MANIFEST_LIST $TMP_TAR_LIST; exit' 0 1 2 3 15
+    rm -f "$TMP_TAR_LIST"
+    if [[ -e $TMP_TAR_LIST ]]; then
+	echo "$0: ERROR: cannot remove temporary file tar list: $TMP_TAR_LIST" 1>&2
+	exit 231
     fi
-    :> "$TMP_FILE_LIST"
-    if [[ ! -e $TMP_FILE_LIST ]]; then
-	echo "$0: ERROR: cannot create temporary file manifest list: $TMP_FILE_LIST" 1>&2
-	exit 228
+    :> "$TMP_TAR_LIST"
+    if [[ ! -e $TMP_TAR_LIST ]]; then
+	echo "$0: ERROR: cannot create temporary file tar list: $TMP_TAR_LIST" 1>&2
+	exit 232
     fi
 elif [[ $V_FLAG -ge 3 ]]; then
-    echo "$0: debug[3]: because of -n, temporary file manifest list is not used: $TMP_FILE_LIST" 1>&2
+    echo "$0: debug[3]: because of -n, temporary file tar list is not used: $TMP_TAR_LIST" 1>&2
+fi
+
+# create a temporary exit code
+#
+# It is a pain to set the EXIT_CODE deep inside a loop, so we write the EXIT_CODE into a file
+# and read the file (setting EXIT_CODE again) after the loop.  A hack, but good enough for our needs.
+#
+TMP_EXIT_CODE=".$NAME.$$.exit.code"
+if [[ $V_FLAG -ge 3 ]]; then
+    echo  "$0: debug[3]: temporary exit code: $TMP_EXIT_CODE" 1>&2
+fi
+if [[ -z $NOOP ]]; then
+    trap 'rm -f $TMP_MANIFEST_LIST $TMP_TAR_LIST $TMP_EXIT_CODE; exit' 0 1 2 3 15
+    rm -f "$TMP_EXIT_CODE"
+    if [[ -e $TMP_EXIT_CODE ]]; then
+	echo "$0: ERROR: cannot remove temporary exit code: $TMP_EXIT_CODE" 1>&2
+	exit 233
+    fi
+    echo "$EXIT_CODE" > "$TMP_EXIT_CODE"
+    if [[ ! -e $TMP_EXIT_CODE ]]; then
+	echo "$0: ERROR: cannot create temporary exit code: $TMP_EXIT_CODE" 1>&2
+	exit 234
+    fi
+elif [[ $V_FLAG -ge 3 ]]; then
+    echo "$0: debug[3]: because of -n, temporary exit code is not used: $TMP_EXIT_CODE" 1>&2
+fi
+
+# create a temporary tarball
+#
+TMP_TARBALL=".$NAME.$$.tar.bz2"
+if [[ $V_FLAG -ge 3 ]]; then
+    echo  "$0: debug[3]: temporary tarball: $TMP_TARBALL" 1>&2
+fi
+if [[ -z $NOOP ]]; then
+    trap 'rm -f $TMP_MANIFEST_LIST $TMP_TAR_LIST $TMP_EXIT_CODE $TMP_TARBALL; exit' 0 1 2 3 15
+    rm -f "$TMP_TARBALL"
+    if [[ -e $TMP_TARBALL ]]; then
+	echo "$0: ERROR: cannot remove temporary tarball: $TMP_TARBALL" 1>&2
+	exit 231
+    fi
+    :> "$TMP_TARBALL"
+    if [[ ! -e $TMP_TARBALL ]]; then
+	echo "$0: ERROR: cannot create temporary tarball: $TMP_TARBALL" 1>&2
+	exit 232
+    fi
+elif [[ $V_FLAG -ge 3 ]]; then
+    echo "$0: debug[3]: because of -n, temporary tarball is not used: $TMP_TARBALL" 1>&2
 fi
 
 # generate sorted list of entry files from the entry's manifest
 #
 # We also add ioccc.css and var.mk from the top level.
 #
-awk -f "$FILELIST_ENTRY_JSON_AWK" "$ENTRY_JSON" > "$TMP_MANIFEST_LIST"
-status="$?"
-if [[ $status -ne 0 ]]; then
-    echo "$0: ERROR: awk -f $FILELIST_ENTRY_JSON_AWK $ENTRY_JSON > $TMP_MANIFEST_LIST failed, error: $status" 1>&2
-    exit 7
-fi
-echo "$IOCCC_CSS" >> "$TMP_MANIFEST_LIST"
-echo "$VAR_MK" >> "$TMP_MANIFEST_LIST"
-sort -d -u "$TMP_MANIFEST_LIST" -o "$TMP_MANIFEST_LIST"
-status="$?"
-if [[ $status -ne 0 ]]; then
-    echo "$0: ERROR: sort -d -u $TMP_MANIFEST_LIST -o $TMP_MANIFEST_LIST failed, error: $status" 1>&2
-    exit 7
+if [[ -z $NOOP ]]; then
+    awk -f "$FILELIST_ENTRY_JSON_AWK" "$ENTRY_JSON" > "$TMP_MANIFEST_LIST"
+    status="$?"
+    if [[ $status -ne 0 ]]; then
+	echo "$0: ERROR: awk -f $FILELIST_ENTRY_JSON_AWK $ENTRY_JSON > $TMP_MANIFEST_LIST failed, error: $status" 1>&2
+	exit 7
+    fi
+    echo "$IOCCC_CSS" >> "$TMP_MANIFEST_LIST"
+    echo "$VAR_MK" >> "$TMP_MANIFEST_LIST"
+    sort -d -u "$TMP_MANIFEST_LIST" -o "$TMP_MANIFEST_LIST"
+    status="$?"
+    if [[ $status -ne 0 ]]; then
+	echo "$0: ERROR: sort -d -u $TMP_MANIFEST_LIST -o $TMP_MANIFEST_LIST failed, error: $status" 1>&2
+	exit 7
+    fi
+elif [[ $V_FLAG -ge 3 ]]; then
+    echo "$0: debug[3]: because of -n, temporary file manifest list was not formed: $TMP_MANIFEST_LIST" 1>&2
 fi
 
 # generate sorted list of found entry files
 #
-# We also add ioccc.css and var.mk from the top level.
+# We exclude the compressed tarball itself because we are writing it.
 #
-find "$IOCCC_CSS" "$VAR_MK" "$ENTRY_PATH" -type f -print > "$TMP_FILE_LIST"
-status="$?"
-if [[ $status -ne 0 ]]; then
-    echo "$0: ERROR: find $IOCCC_CSS $VAR_MK $ENTRY_PATH -type f -print > $TMP_FILE_LIST failed, error: $status" 1>&2
-    exit 7
+if [[ -z $NOOP ]]; then
+
+    # exclude the compressed tarball from the tarlist
+    #
+    grep -F -v "$TARBALL" < "$TMP_MANIFEST_LIST" | while read -r file; do
+
+	# if file does not exist, warn
+	#
+	if [[ ! -e $file ]]; then
+	    echo "$0: Warning: missing $YYYY_DIR file: $file" 1>&2
+	    # unless -W, missing files cause this tool to exit 1
+	    if [[ -z $CAP_W_FLAG_FOUND ]]; then
+		echo 1 > "$TMP_EXIT_CODE" # exit 1
+	    fi
+	else
+	    echo "$file"
+	fi
+    done > "$TMP_TAR_LIST"
+    if [[ $V_FLAG -ge 7 ]]; then
+	echo "$0: debug[7]: list of files to tar start below" 1>&2
+	cat "$TMP_TAR_LIST" 1>&2
+	echo "$0: debug[7]: list of files to tar ends above" 1>&2
+    fi
+elif [[ $V_FLAG -ge 3 ]]; then
+    echo "$0: debug[3]: because of -n, temporary file tar list was not formed: $TMP_MANIFEST_LIST" 1>&2
 fi
-sort -d -u "$TMP_FILE_LIST" -o "$TMP_FILE_LIST"
-status="$?"
-if [[ $status -ne 0 ]]; then
-    echo "$0: ERROR: sort -d -u $TMP_FILE_LIST -o $TMP_FILE_LIST failed, error: $status" 1>&2
-    exit 7
+if [[ ! -s "$TMP_TAR_LIST" ]]; then
+    echo "$0: ERROR: no files found to tar for: $ENTRY_JSON" 1>&2
+    exit 1
+fi
+EXIT_CODE=$(< "$TMP_EXIT_CODE")
+if [[ -z $EXIT_CODE ]]; then
+    echo "$0: ERROR: temporary exit file is empty: $TMP_EXIT_CODE" 1>&2
+    exit 233
 fi
 
-# note if the manifest does NOT match the file list
+# form the tarball
 #
-if cmp -s "$TMP_MANIFEST_LIST" "$TMP_FILE_LIST"; then
-    if [[ $V_FLAG -ge 1 ]]; then
-	echo  "$0: debug[1]: file list marches manifest for: $ENTRY_PATH" 1>&2
+# We use gnu tar to form the bzip2 compressed tarball with careful arguments
+# so that the resulting tarball is the same, byte for byte.
+#
+if [[ -z $NOOP ]]; then
+
+    # case: form the tarball verbosely if -v 3 or more
+    #
+    if [[ $V_FLAG -gt 3 ]]; then
+	echo "$0: debug[3]: about to execute:" \
+	    "$GTAR_TOOL --files-from=- --sparse --no-acls --sort=name" \
+	    "--owner=501 --group=20 --numeric-owner --totals" \
+	    "--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime" \
+	    "-jcvf $TMP_TARBALL < $TMP_TAR_LIST" 1>&2
+	"$GTAR_TOOL" --files-from=- --sparse --no-acls --sort=name \
+		     --owner=501 --group=20 --numeric-owner --totals \
+		     --pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime \
+		     -jcvf "$TMP_TARBALL" < "$TMP_TAR_LIST"
+	status="$?"
+	if [[ $status -ne 0 ]]; then
+	    echo "$0: ERROR:" \
+		"$GTAR_TOOL --files-from=- --sparse --no-acls --sort=name" \
+		"--owner=501 --group=20 --numeric-owner --totals" \
+		"--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime" \
+		"-jcvf $TMP_TARBALL < $TMP_TAR_LIST failed, error: $status" 1>&2
+	    EXIT_CODE=9 # exit 9
+	fi
+
+    # case: form the tarball silently
+    #
+    else
+	"$GTAR_TOOL" --files-from=- --sparse --no-acls --sort=name \
+		     --owner=501 --group=20 --numeric-owner \
+		     --pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime \
+		     -jcf "$TMP_TARBALL" < "$TMP_TAR_LIST"
+	status="$?"
+	if [[ $status -ne 0 ]]; then
+	    echo "$0: ERROR:" \
+		"$GTAR_TOOL --files-from=- --sparse --no-acls --sort=name" \
+		"--owner=501 --group=20 --numeric-owner" \
+		"--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime" \
+		"-jcf $TMP_TARBALL < $TMP_TAR_LIST failed, error: $status" 1>&2
+	    EXIT_CODE=9 # exit 9
+	fi
     fi
-else
-    echo "$0: Warning: file list does NOT match manifest for: $ENTRY_PATH" 1>&2
-    echo "$0: Warning: manifest files that are missing starts below: $ENTRY_PATH" 1>&2
-    comm -23 "$TMP_MANIFEST_LIST" "$TMP_FILE_LIST"
-    echo "$0: Warning: manifest files that are missing ends above: $ENTRY_PATH" 1>&2
-    echo "$0: Warning: found files not in manifest starts below: $ENTRY_PATH" 1>&2
-    comm -13 "$TMP_MANIFEST_LIST" "$TMP_FILE_LIST"
-    echo "$0: Warning: found files not in manifest ends above: $ENTRY_PATH" 1>&2
-    EXIT_CODE=1 # exit 1
+
+    # verify the tarball is not empty
+    #
+    if [[ ! -s $TMP_TARBALL ]]; then
+	echo "$0: ERROR: tarball is missing os empty: $TMP_TARBALL" 1>&2
+	EXIT_CODE=9 # exit 9
+    fi
+
+# case: -n
+#
+elif [[ $V_FLAG -ge 3 ]]; then
+    echo "$0: debug[3]: because of -n, did not execute:" \
+		"$GTAR_TOOL --files-from=- --sparse --no-acls --sort=name" \
+		"--owner=501 --group=20 --numeric-owner --totals" \
+		"--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime" \
+		"-jcvf $TMP_TARBALL < $TMP_TAR_LIST" 1>&2
+fi
+EXIT_CODE=$(< "$TMP_EXIT_CODE")
+if [[ -z $EXIT_CODE ]]; then
+    echo "$0: ERROR: temporary exit file has no contents: $TMP_EXIT_CODE" 1>&2
+    exit 234
+fi
+
+# move the tarball in place onlt if differnt
+#
+if [[ -z $NOOP ]]; then
+    if cmp -s "$TMP_TARBALL" "$TARBALL"; then
+
+	# case: tarball did not change
+	#
+	if [[ $V_FLAG -ge 5 ]]; then
+	    echo "$0: debug[5]: file did not change: $TARBALL" 1>&2
+	fi
+
+    else
+
+	# case: tarball changed, update the file
+	#
+	if [[ $V_FLAG -ge 5 ]]; then
+	    echo "$0: debug[5]: mv -f -- $TMP_TARBALL $TARBALL" 1>&2
+	fi
+	if [[ $V_FLAG -ge 3 ]]; then
+	    mv -f -v -- "$TMP_TARBALL" "$TARBALL"
+	    status="$?"
+	else
+	    mv -f -- "$TMP_TARBALL" "$TARBALL"
+	    status="$?"
+	fi
+	if [[ status -ne 0 ]]; then
+	    echo "$0: ERROR: mv -f -- $TMP_TARBALL $TARBALL filed, error code: $status" 1>&2
+	    EXIT_CODE=9 # exit 9
+	elif [[ $V_FLAG -ge 1 ]]; then
+	    echo "$0: debug[1]: built replaced HTML file: $TARBALL" 1>&2
+	fi
+	if [[ ! -s $TARBALL ]]; then
+	    echo "$0: ERROR: not a non-empty index HTML file: $TARBALL" 1>&2
+	    EXIT_CODE=9 # exit 9
+	fi
+    fi
+elif [[ $V_FLAG -ge 3 ]]; then
+    echo "$0: debug[3]: because of -n, tarball was not touched: $TARBALL" 1>&2
+fi
+EXIT_CODE=$(< "$TMP_EXIT_CODE")
+if [[ -z $EXIT_CODE ]]; then
+    echo "$0: ERROR: temporary exit file has no contents: $TMP_EXIT_CODE" 1>&2
+    exit 234
 fi
 
 # All Done!!! -- Jessica Noll, Age 2
 #
 if [[ -z $NOOP ]]; then
-    rm -f "$TMP_MANIFEST_LIST" "$TMP_FILE_LIST"
+    rm -f "$TMP_MANIFEST_LIST" "$TMP_TAR_LIST" "$TMP_EXIT_CODE" "$TMP_TARBALL"
 elif [[ $V_FLAG -ge 1 ]]; then
-    echo  "$0: debug[1]: -n disabled execution of: rm -f $TMP_MANIFEST_LIST" 1>&2
+    echo  "$0: debug[1]: -n disabled execution of: rm -f $TMP_MANIFEST_LIST $TMP_TAR_LIST $TMP_EXIT_CODE $TMP_TARBALL" 1>&2
 fi
 exit "$EXIT_CODE"
